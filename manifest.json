@@ -2,7 +2,7 @@
     "name": "Chat Tree",
     "display_name": "Chat Tree (One File)",
     "description": "Управление ветками внутри одного .jsonl файла",
-    "author": "Gemini",
+    "author": "Moonsy",
     "version": "1.5.0",
     "js": "index.js",
     "settings": "settings.html"
