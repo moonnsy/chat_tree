@@ -12,7 +12,7 @@ if (panelStart !== -1) {
     let jumpStart = code.indexOf('<button id="ct-jump-btn"', panelStart);
     if (jumpStart !== -1) {
         let jumpEnd = code.indexOf('</button>', jumpStart) + 9;
-        const jumpNew = '<button id="ct-jump-btn" style="flex:1; padding:10px; background:#98FB98; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; display:none; font-size:15px;">ПРЫЖОК</button>';
+        const jumpNew = '<button id="ct-jump-btn" style="flex:1; padding:10px; background:#8db7d5; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; display:none; font-size:15px;">ПРЫЖОК</button>';
         code = code.substring(0, jumpStart) + jumpNew + code.substring(jumpEnd);
     }
     
@@ -26,7 +26,7 @@ if (panelStart !== -1) {
     let titleStart = code.indexOf('<span style="color: #4CAF50;', panelStart);
     if (titleStart !== -1) {
         let titleEnd = code.indexOf('</span>', titleStart) + 7;
-        const titleNew = '<span style="color: #98FB98; font-weight: 600; font-family: Segoe UI, Tahoma, sans-serif; font-size: 18px; letter-spacing: 0.5px;">Предпросмотр сообщения</span>';
+        const titleNew = '<span style="color: #8db7d5; font-family: \'Caveat\', cursive; font-weight: 600; font-size: 22px; letter-spacing: 0.5px;">Предпросмотр сообщения</span>';
         code = code.substring(0, titleStart) + titleNew + code.substring(titleEnd);
     }
 }

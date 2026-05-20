@@ -1,24 +1,15 @@
 const fs = require('fs');
 let code = fs.readFileSync('index.js', 'utf8');
 
-const pairs = [
-    [
-        '<h3 style="margin-top:0; color:#00ff80;">Предпросмотр сообщения</h3>',
-        '<h3 style="margin-top:0; color:#98FB98; font-family: Segoe UI, Tahoma, Geneva, Verdana, sans-serif; font-size: 18px; letter-spacing: 0.5px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">Предпросмотр сообщения</h3>'
-    ],
-    [
-        'background:#00ff80; color:#000; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">ПЕРЕПРЫГНУТЬ ДИАЛОГ СЮДА</button>',
-        'background:#98FB98; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">ПЕРЕПРЫГНУТЬ ДИАЛОГ СЮДА</button>'
-    ],
-];
+// 1. Title
+code = code.replace(
+    '<h3 style="margin-top:0; color:#8db7d5;">Предпросмотр сообщения</h3>',
+    '<h3 style="margin-top:0; color:#8db7d5; font-family: \'Caveat\', cursive; font-size: 22px; letter-spacing: 0.5px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">Предпросмотр сообщения</h3>'
+);
 
-pairs.forEach(p => {
-    code = code.replace(p[0], p[1]);
-});
-
-// 2. Buttons in preview panel
-let jumpOrig = 'background:#00ff80; color:#000; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">ПЕРЕПРЫГНУТЬ ДИАЛОГ СЮДА</button>';
-let jumpNew = 'background:#98FB98; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">ПЕРЕПРЫГНУТЬ ДИАЛОГ СЮДА</button>';
+// 2. Buttons
+let jumpOrig = 'background:#8db7d5; color:#000; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">ПЕРЕПРЫГНУТЬ ДИАЛОГ СЮДА</button>';
+let jumpNew = 'background:#8db7d5; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">ПЕРЕПРЫГНУТЬ ДИАЛОГ СЮДА</button>';
 code = code.replace(jumpOrig, jumpNew);
 
 let delOrig = 'background:#ff4040; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">УДАЛИТЬ ВЕТКУ</button>';

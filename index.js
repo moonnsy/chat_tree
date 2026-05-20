@@ -578,10 +578,12 @@ function showTreeModal() {
     $('#chat-tree-modal').remove();
     $('#ct-tree-style').remove();
 
+    if (!$('#ct-font-caveat').length) {
+        $('head').append('<link id="ct-font-caveat" href="https://fonts.googleapis.com/css2?family=Caveat:wght@400..700&display=swap" rel="stylesheet">');
+    }
+
     $('head').append(`
     <style id="ct-tree-style">
-        @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400..700&display=swap');
-
         .ct-tree-container ul { 
             display: flex; 
             justify-content: center; 
@@ -648,8 +650,8 @@ function showTreeModal() {
         }
 
         .ct-node.ct-selected > div {
-            box-shadow: 0 0 25px 8px rgba(141, 183, 213, 0.9) !important;
-            border-color: #8db7d5 !important;
+            box-shadow: 0 0 25px 8px rgba(0, 170, 255, 0.9) !important;
+            border-color: #00aaff !important;
         }
         
         .ct-search-box { position:relative; flex:1; height:100%; }
@@ -682,7 +684,7 @@ function showTreeModal() {
         
         <div id="ct-preview-panel" style="display:none; position:absolute; bottom:80px; left:20px; right:20px; background:#111; border: 2px solid #333; border-radius: 10px; padding: 15px; flex-direction: column; z-index: 10000; max-height: 40vh;">
             <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 10px;">
-                <span style="color: #8db7d5; font-weight: 600; font-family: 'Caveat', cursive; font-size: 24px; letter-spacing: 0.5px;">Предпросмотр сообщения</span>
+                <span style="color: #8db7d5; font-family: 'Caveat', cursive; font-weight: 600; font-size: 22px; letter-spacing: 0.5px;">Предпросмотр сообщения</span>
                 <button id="ct-preview-close" style="background: transparent; border: none; color: #fff; font-size: 20px; cursor: pointer;">&times;</button>
             </div>
             <div id="ct-preview-text" style="color: #ddd; flex: 1; overflow-y: auto; font-size: 14px; line-height: 1.4; margin-bottom: 15px;"></div>

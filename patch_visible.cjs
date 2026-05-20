@@ -5,8 +5,8 @@ let code = fs.readFileSync('index.js', 'utf8');
 // Let's remove `display:none; ` from those two exact strings.
 
 // Jump
-const jumpOld = '<button id="ct-jump-btn" style="flex:1; padding:10px; background:#98FB98; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; display:none; font-size:15px;">ПРЫЖОК</button>';
-const jumpNew = '<button id="ct-jump-btn" style="flex:1; padding:10px; background:#98FB98; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; font-size:15px;">ПРЫЖОК</button>';
+const jumpOld = '<button id="ct-jump-btn" style="flex:1; padding:10px; background:#8db7d5; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; display:none; font-size:15px;">ПРЫЖОК</button>';
+const jumpNew = '<button id="ct-jump-btn" style="flex:1; padding:10px; background:#8db7d5; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; font-size:15px;">ПРЫЖОК</button>';
 code = code.replace(jumpOld, jumpNew);
 
 // Delete
