@@ -27,6 +27,7 @@ function cloneMessageWithSwipe(msg, s) {
     return cloned;
 }
 
+// ПАТЧ: Безопасное сравнение путей для старых чатов
 function isPathDuplicate(pathA, pathB) {
     if (!pathA || !pathB) return false;
     if (pathA.length !== pathB.length) return false;
@@ -36,15 +37,21 @@ function isPathDuplicate(pathA, pathB) {
             if (a !== b) return false;
             continue;
         }
-        if (a.mes !== b.mes || a.is_user !== b.is_user) return false;
+        let aUser = String(a.is_user) === 'true';
+        let bUser = String(b.is_user) === 'true';
+        let aMes = (a.mes || "").trim().replace(/\r\n/g, '\n');
+        let bMes = (b.mes || "").trim().replace(/\r\n/g, '\n');
+        
+        if (aMes !== bMes || aUser !== bUser) return false;
     }
     return true;
 }
 
+// ПАТЧ: Очистка текста для фингерпринта
 function msgFingerprint(m) {
     if (!m) return "";
     let text = (m.swipes && m.swipes.length > 0 ? m.swipes[0] : m.mes) || "";
-    return text;
+    return text.trim().replace(/\r\n/g, '\n');
 }
 
 function isGhost(m) {
@@ -59,12 +66,18 @@ function buildRestoreArray(stack) {
     return stack.map(item => cloneMessageWithSwipe(item.msg, item.swipeId));
 }
 
+// ПАТЧ: Нормализованный поиск точки расхождения
 async function deleteBranchTarget(toRestore) {
     if (!toRestore || toRestore.length === 0) return;
 
     let divergeIdx = -1;
     for (let i = 0; i < Math.min(coreChat.length, toRestore.length); i++) {
-        if (coreChat[i].mes !== toRestore[i].mes || coreChat[i].is_user !== toRestore[i].is_user) {
+        let cUser = String(coreChat[i].is_user) === 'true';
+        let rUser = String(toRestore[i].is_user) === 'true';
+        let cMes = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
+        let rMes = (toRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
+
+        if (cMes !== rMes || cUser !== rUser) {
             divergeIdx = i;
             break;
         }
@@ -104,7 +117,10 @@ async function deleteBranchTarget(toRestore) {
                     let fpCandidate = msgFingerprint(candidate[0]);
                     let fpTarget = msgFingerprint(branchToMatch[0]);
 
-                    if (fpCandidate.trim() === fpTarget.trim() && candidate[0].is_user === branchToMatch[0].is_user) {
+                    let candUser = String(candidate[0].is_user) === 'true';
+                    let tgtUser = String(branchToMatch[0].is_user) === 'true';
+
+                    if (fpCandidate === fpTarget && candUser === tgtUser) {
                         futures.splice(f, 1);
                         deletedAtLeastOne = true;
                     }
@@ -185,7 +201,7 @@ eventSource.on(event_types.MESSAGE_SWIPED, async (id) => {
 function getAvatar(isUser, msgName) {
     const context = getContext();
     let src = '';
-    if (isUser) {
+    if (String(isUser) === 'true') {
         src = $('.mes[is_user="true"] .avatar img').last().attr('src')
             || $('.avatar-container img').attr('src')
             || $('#avatar_url_input').val()
@@ -269,6 +285,7 @@ function buildHtmlTree(node) {
     return html;
 }
 
+// ПАТЧ: Очистка текста при слиянии свайпов
 function unifyMessages(baseMsg, incMsg) {
     let clone = cloneChat([baseMsg])[0];
     let baseSwipes = clone.swipes || [clone.mes];
@@ -281,7 +298,10 @@ function unifyMessages(baseMsg, incMsg) {
 
     for (let i = 0; i < incSwipes.length; i++) {
         let text = incSwipes[i] || "";
-        let existingIdx = clone.swipes.indexOf(text);
+        let cleanText = text.trim().replace(/\r\n/g, '\n');
+        
+        let existingIdx = clone.swipes.findIndex(s => (s || "").trim().replace(/\r\n/g, '\n') === cleanText);
+        
         if (existingIdx !== -1) {
             incToBaseMap[i] = existingIdx;
         } else {
@@ -325,9 +345,9 @@ function unifyMessages(baseMsg, incMsg) {
     return { unifiedMsg: clone, incToBaseMap: incToBaseMap };
 }
 
+// ПАТЧ: Нормализация ключа группы
 function parseArray(msgArray, reconstructStack, activePathAccumulator, virtualFuturesToInject = []) {
     if (!msgArray || !Array.isArray(msgArray) || msgArray.length === 0) return [];
-
     if (reconstructStack.length > 2000) return [];
 
     let currentStack = [...reconstructStack];
@@ -344,10 +364,9 @@ function parseArray(msgArray, reconstructStack, activePathAccumulator, virtualFu
     for (let s = 0; s < swipes.length; s++) {
         let isLocalSwipeActive = (s === activeSwipe);
         let isGloballyGreen = isLocalSwipeActive && activePathAccumulator;
-
         let targetChatToRestoreStack = [...currentStack, { msg: msg, swipeId: s }];
-
         let childrenPaths = [];
+        
         if (isLocalSwipeActive && msgArray.length > 1) {
             childrenPaths.push({ path: msgArray.slice(1), isNativelyActive: isGloballyGreen });
         }
@@ -372,7 +391,8 @@ function parseArray(msgArray, reconstructStack, activePathAccumulator, virtualFu
             if (path.length === 0) return;
 
             let msg0 = path[0];
-            let groupKey = msg0.is_user + "_" + (msg0.name || "");
+            let isUserBool = String(msg0.is_user) === 'true'; // Нормализация флага!
+            let groupKey = isUserBool + "_" + (msg0.name || "");
 
             if (!groupedPaths[groupKey]) groupedPaths[groupKey] = [];
             groupedPaths[groupKey].push({ path: path, isNativelyActive: cp.isNativelyActive });
@@ -455,7 +475,6 @@ function renderTree() {
     $('#tree-transform').off('click', '.ct-node').on('click', '.ct-node', async function (e) {
         e.stopPropagation();
 
-        // СИНЯЯ ПОДСВЕТКА ВЫБРАННОГО СООБЩЕНИЯ
         $('.ct-node').removeClass('ct-selected');
         $(this).addClass('ct-selected');
 
@@ -479,18 +498,29 @@ function renderTree() {
         $('#ct-jump-btn').off('click').on('click', async function () {
             let safeToRestore = buildRestoreArray(toRestoreStack);
 
+            // ПАТЧ: Очищенная проверка совпадений для безопасного прыжка
             for (let i = 0; i < safeToRestore.length; i++) {
                 if (coreChat[i]) {
                     let rSwipes = safeToRestore[i].swipes || [safeToRestore[i].mes];
                     let cSwipes = coreChat[i].swipes || [coreChat[i].mes];
-                    let isSameMsg = rSwipes.includes(coreChat[i].mes) || cSwipes.includes(safeToRestore[i].mes);
+                    
+                    let rMesClean = (safeToRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
+                    let cMesClean = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
+
+                    let rSwipesClean = rSwipes.map(s => (s || "").trim().replace(/\r\n/g, '\n'));
+                    let cSwipesClean = cSwipes.map(s => (s || "").trim().replace(/\r\n/g, '\n'));
+
+                    let isSameMsg = rSwipesClean.includes(cMesClean) || cSwipesClean.includes(rMesClean);
 
                     if (isSameMsg) {
                         let unifiedObj = unifyMessages(coreChat[i], safeToRestore[i]);
                         let unifiedMsg = unifiedObj.unifiedMsg;
 
                         let targetText = safeToRestore[i].mes;
-                        let newIdx = unifiedMsg.swipes.indexOf(targetText);
+                        let cleanTargetText = (targetText || "").trim().replace(/\r\n/g, '\n');
+                        
+                        let newIdx = unifiedMsg.swipes.findIndex(s => (s || "").trim().replace(/\r\n/g, '\n') === cleanTargetText);
+                        
                         if (newIdx === -1) {
                             unifiedMsg.swipes.push(targetText);
                             newIdx = unifiedMsg.swipes.length - 1;
@@ -504,9 +534,15 @@ function renderTree() {
                 }
             }
 
+            // ПАТЧ: Нормализованный поиск точки расхождения
             let divergeIdx = -1;
             for (let i = 0; i < Math.min(coreChat.length, safeToRestore.length); i++) {
-                if (coreChat[i].mes !== safeToRestore[i].mes || coreChat[i].is_user !== safeToRestore[i].is_user) {
+                let cUser = String(coreChat[i].is_user) === 'true';
+                let sUser = String(safeToRestore[i].is_user) === 'true';
+                let cMes = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
+                let sMes = (safeToRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
+
+                if (cMes !== sMes || cUser !== sUser) {
                     divergeIdx = i;
                     break;
                 }
@@ -519,7 +555,12 @@ function renderTree() {
 
                 if (parentIdx >= 0) {
                     let parentTextInCore = coreChat[parentIdx].mes;
-                    let mappedS = safeToRestore[parentIdx].swipes ? safeToRestore[parentIdx].swipes.indexOf(parentTextInCore) : -1;
+                    let cleanParentText = (parentTextInCore || "").trim().replace(/\r\n/g, '\n');
+                    
+                    let mappedS = -1;
+                    if (safeToRestore[parentIdx].swipes) {
+                        mappedS = safeToRestore[parentIdx].swipes.findIndex(s => (s || "").trim().replace(/\r\n/g, '\n') === cleanParentText);
+                    }
                     if (mappedS === -1) mappedS = safeToRestore[parentIdx].swipe_id || 0;
 
                     let lostFuture = coreChat.slice(lostStart);
@@ -574,6 +615,9 @@ function renderTree() {
     });
 }
 
+// Функции showTreeModal, createTreeButtonUI и jQuery Ready оставлены без изменений,
+// так как вся проблема была исключительно в логике парсинга данных.
+
 function showTreeModal() {
     $('#chat-tree-modal').remove();
     $('#ct-tree-style').remove();
@@ -584,76 +628,20 @@ function showTreeModal() {
 
     $('head').append(`
     <style id="ct-tree-style">
-        .ct-tree-container ul { 
-            display: flex; 
-            justify-content: center; 
-            align-items: flex-start; 
-            padding-top: 20px; 
-            position: relative; 
-        }
-        
-        .ct-tree-container li { 
-            display: flex; 
-            flex-direction: column; 
-            align-items: center; 
-            position: relative; 
-            padding: 20px 10px 0 10px; 
-            flex-shrink: 0 !important; 
-            align-self: flex-start;
-        }
-        
-        .ct-tree-container li::before, .ct-tree-container li::after { 
-            content: ''; 
-            position: absolute; 
-            top: 0; 
-            width: 50%; 
-            height: 20px; 
-            box-sizing: border-box;
-        }
-        .ct-tree-container li::before { 
-            left: 0; 
-            right: 50%; 
-            border-top: 2px solid rgba(255,255,255,0.3); 
-        }
-        .ct-tree-container li::after { 
-            left: 50%; 
-            right: 0; 
-            border-top: 2px solid rgba(255,255,255,0.3); 
-            border-left: 2px solid rgba(255,255,255,0.3); 
-        }
-        
+        .ct-tree-container ul { display: flex; justify-content: center; align-items: flex-start; padding-top: 20px; position: relative; }
+        .ct-tree-container li { display: flex; flex-direction: column; align-items: center; position: relative; padding: 20px 10px 0 10px; flex-shrink: 0 !important; align-self: flex-start; }
+        .ct-tree-container li::before, .ct-tree-container li::after { content: ''; position: absolute; top: 0; width: 50%; height: 20px; box-sizing: border-box; }
+        .ct-tree-container li::before { left: 0; right: 50%; border-top: 2px solid rgba(255,255,255,0.3); }
+        .ct-tree-container li::after { left: 50%; right: 0; border-top: 2px solid rgba(255,255,255,0.3); border-left: 2px solid rgba(255,255,255,0.3); }
         .ct-tree-container li:first-child::before { border: 0 none; }
         .ct-tree-container li:last-child::after { border: 0 none; }
-        .ct-tree-container li:last-child::before { 
-            border-right: 2px solid rgba(255,255,255,0.3); 
-            border-radius: 0 5px 0 0; 
-        }
+        .ct-tree-container li:last-child::before { border-right: 2px solid rgba(255,255,255,0.3); border-radius: 0 5px 0 0; }
         .ct-tree-container li:first-child::after { border-radius: 5px 0 0 0; }
-        
         .ct-tree-container li:only-child::before, .ct-tree-container li:only-child::after { display: none; }
         .ct-tree-container li:only-child { padding-top: 0; padding-left: 0; padding-right: 0; }
-        
-        .ct-tree-container ul ul::before { 
-            content: ''; 
-            position: absolute; 
-            top: 0; 
-            left: 50%; 
-            border-left: 2px solid rgba(255,255,255,0.3); 
-            width: 0; 
-            height: 20px; 
-            transform: translateX(-1px);
-        }
-        
-        .ct-node { 
-            border-radius: 50% !important; 
-            background-color: #222; 
-        }
-
-        .ct-node.ct-selected > div {
-            box-shadow: 0 0 25px 8px rgba(0, 170, 255, 0.9) !important;
-            border-color: #00aaff !important;
-        }
-        
+        .ct-tree-container ul ul::before { content: ''; position: absolute; top: 0; left: 50%; border-left: 2px solid rgba(255,255,255,0.3); width: 0; height: 20px; transform: translateX(-1px); }
+        .ct-node { border-radius: 50% !important; background-color: #222; }
+        .ct-node.ct-selected > div { box-shadow: 0 0 25px 8px rgba(0, 170, 255, 0.9) !important; border-color: #00aaff !important; }
         .ct-search-box { position:relative; flex:1; height:100%; }
         .ct-search-icon { position:absolute; left:12px; top:11px; width:18px; height:18px; filter: drop-shadow(0px 0px 2px rgba(141,183,213,0.4)); }
         .ct-search-input { width: 100%; height: 100%; padding: 0 15px 0 40px; border-radius: 8px; background: rgba(20,20,20,0.85); backdrop-filter: blur(8px); color: #fff; border: 1px solid rgba(141,183,213,0.3); font-size: 15px; box-sizing: border-box; outline: none; box-shadow: 0 4px 12px rgba(0,0,0,0.5); transition: 0.2s; }
@@ -727,7 +715,6 @@ function showTreeModal() {
     if (!tf || !vp) return;
 
     let scale = 1, isDown = false, startX, startY;
-
     let posX = vp.clientWidth / 2 - tf.clientWidth / 2;
     let posY = 50;
 
@@ -742,18 +729,13 @@ function showTreeModal() {
         let activeNodes = $('.active-node');
         if (activeNodes.length > 0) {
             let activeNode = activeNodes.last();
-
             let activeRect = activeNode[0].getBoundingClientRect();
             let tfRect = tf.getBoundingClientRect();
-
             let relX = (activeRect.left - tfRect.left + activeRect.width / 2) / scale;
             let relY = (activeRect.top - tfRect.top + activeRect.height / 2) / scale;
-
             let vpRect = vp.getBoundingClientRect();
-
             posX = vpRect.width / 2 - relX * scale;
             posY = vpRect.height / 3 - relY * scale;
-
             tf.style.transition = 'transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)';
             update();
             setTimeout(() => { tf.style.transition = ''; }, 400);
@@ -772,13 +754,10 @@ function showTreeModal() {
         const rect = vp.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
-
         const delta = e.deltaY > 0 ? 0.9 : 1.1;
-
         posX = mouseX - (mouseX - posX) * delta;
         posY = mouseY - (mouseY - posY) * delta;
         scale *= delta;
-
         update();
     };
 
@@ -794,23 +773,18 @@ function showTreeModal() {
 
     vp.addEventListener('touchmove', e => {
         if (isDown || e.touches.length === 2) e.preventDefault();
-
         if (e.touches.length === 2) {
             const currentDistance = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
             if (initialDistance > 0) {
                 const rect = vp.getBoundingClientRect();
                 const clientX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 const clientY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-
                 const mouseX = clientX - rect.left;
                 const mouseY = clientY - rect.top;
-
                 const ratio = currentDistance / initialDistance;
-
                 posX = mouseX - (mouseX - posX) * ratio;
                 posY = mouseY - (mouseY - posY) * ratio;
                 scale *= ratio;
-
                 initialDistance = currentDistance;
                 update();
             }
@@ -822,7 +796,6 @@ function showTreeModal() {
     vp.addEventListener('touchend', e => {
         if (e.touches.length < 2) initialDistance = 0;
         if (e.touches.length === 0) isDown = false;
-
         if (e.touches.length === 1) {
             isDown = true;
             startX = e.touches[0].clientX - posX;
@@ -836,7 +809,7 @@ function createTreeButtonUI() {
         $("#extensionsMenu").append(`
             <div id="ct-menu-item-container" class="extension_container interactable" tabindex="0">
                 <div id="ct_btn_open_tree" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:20px; height:20px; margin-right:5px; flex-shrink:0; transform:translateY(2px);"><path d="M12 22v-5"></path><path d="M9 18c-2.3 0-4.3-1.6-4.8-3.8-1.4-.4-2.2-1.7-2.2-3.2 0-2.2 1.8-4 4-4 .4 0 .8.1 1.2.2C8.1 5.1 9.9 4 12 4s3.9 1.1 4.8 3.2c.4-.1.8-.2 1.2-.2 2.2 0 4 1.8 4 4 0 1.5-.8 2.8-2.2 3.2-.5 2.2-2.5 3.8-4.8 3.8"></path></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:20px; height:20px; margin-right:5px; flex-shrink:0; transform:translateY(2px);"><path d="M12 22v-5"></path><path d="M9 18c-2.3 0-4.3-1.6-4.8-3.8-1.4-.4-2.2-1.7-2.2-3.2 0-2.2 1.8-4 4-4 .4 0 .8.1 1.2.2C8.1 5.1 9.9 4 12 4s3.9 1.1 4.8 3.2c.4-.1.8-.2 1.2-.2 2.2 0 4 1.8 4 4 0 1.5-.8 2.8-2.2 3.2-.5 2.2-2.5 3.8-4.8 3.8"></path></svg>
                     <span>Chat Tree</span>
                 </div>
             </div>
@@ -846,12 +819,9 @@ function createTreeButtonUI() {
 
 jQuery(async () => {
     setInterval(createTreeButtonUI, 1000);
-
-    // ИСПРАВЛЕНА ОПЕЧАТКА ЗДЕСЬ (ct_btn_open_tree вместо ct-btn_open_tree)
     $(document).off("click", "#ct_btn_open_tree").on("click", "#ct_btn_open_tree", function (e) {
         e.stopPropagation();
         showTreeModal();
     });
-
     setTimeout(syncShadow, 2000);
 });
