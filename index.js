@@ -74,20 +74,10 @@ async function deleteBranchTarget(toRestore) {
     for (let i = 0; i < Math.min(coreChat.length, toRestore.length); i++) {
         let cUser = String(coreChat[i].is_user) === 'true';
         let rUser = String(toRestore[i].is_user) === 'true';
+        let cMes = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
+        let rMes = (toRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
 
-        let cSwipes = coreChat[i].swipes || [coreChat[i].mes];
-        let rSwipes = toRestore[i].swipes || [toRestore[i].mes];
-
-        let cMesClean = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
-        let rMesClean = (toRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
-
-        let cSwipesClean = cSwipes.map(s => (s || "").trim().replace(/\r\n/g, '\n'));
-        let rSwipesClean = rSwipes.map(s => (s || "").trim().replace(/\r\n/g, '\n'));
-
-        // Проверяем, принадлежат ли тексты одним и тем же свайпам
-        let isSameNode = (cUser === rUser) && (cSwipesClean.includes(rMesClean) || rSwipesClean.includes(cMesClean));
-
-        if (!isSameNode) {
+        if (cMes !== rMes || cUser !== rUser) {
             divergeIdx = i;
             break;
         }
@@ -549,19 +539,10 @@ function renderTree() {
             for (let i = 0; i < Math.min(coreChat.length, safeToRestore.length); i++) {
                 let cUser = String(coreChat[i].is_user) === 'true';
                 let sUser = String(safeToRestore[i].is_user) === 'true';
+                let cMes = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
+                let sMes = (safeToRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
 
-                let cSwipes = coreChat[i].swipes || [coreChat[i].mes];
-                let sSwipes = safeToRestore[i].swipes || [safeToRestore[i].mes];
-
-                let cMesClean = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
-                let sMesClean = (safeToRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
-
-                let cSwipesClean = cSwipes.map(s => (s || "").trim().replace(/\r\n/g, '\n'));
-                let sSwipesClean = sSwipes.map(s => (s || "").trim().replace(/\r\n/g, '\n'));
-
-                let isSameNode = (cUser === sUser) && (cSwipesClean.includes(sMesClean) || sSwipesClean.includes(cMesClean));
-
-                if (!isSameNode) {
+                if (cMes !== sMes || cUser !== sUser) {
                     divergeIdx = i;
                     break;
                 }
