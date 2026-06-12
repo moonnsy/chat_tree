@@ -61,10 +61,181 @@ function isGhost(m) {
     return true;
 }
 
+function getNodeHash(stack) {
+    if (!stack) return "";
+    let texts = stack.map(m => {
+        let text = (m.msg.swipes && m.msg.swipes.length > m.swipeId) ? m.msg.swipes[m.swipeId] : m.msg.mes;
+        return (text || "").trim();
+    });
+    let s = texts.join('||');
+    let h = 0, l = s.length, i = 0;
+    if (l > 0) while (i < l) h = (h << 5) - h + s.charCodeAt(i++) | 0;
+    return "tag_" + h.toString(36);
+}
+
 function buildRestoreArray(stack) {
     if (!stack) return [];
     return stack.map(item => cloneMessageWithSwipe(item.msg, item.swipeId));
 }
+
+// ПАТЧ: Универсальная модалка для тегов и интеграция в чат
+function openGlobalTagModal(nodeHash, nodeText, onSaveCallback, onDeleteCallback) {
+    if (!$('#ct-global-tag-modal-overlay').length) {
+        $('body').append(`
+        <div id="ct-global-tag-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:100001; align-items:center; justify-content:center; background:rgba(0,0,0,0.5);">
+            <div id="ct-global-tag-modal" style="background:#111; border: 2px solid #444; border-radius: 10px; padding: 15px; width: 300px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.8); font-family: sans-serif;">
+                <div style="color:#fff; font-weight:bold; text-align:center;">Настройка тега</div>
+                <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;" id="ct-global-tag-color-picker">
+                    ${['#8db7d5', '#eb8b8b', '#85c496', '#c0a0c3', '#f2ab7c', '#e6c86e', '#c2a382', '#df98b7', '#a8b2b8'].map(c => `<div class="ct-global-color-option" data-color="${c}" style="width: 25px; height: 25px; border-radius: 50%; background: ${c}; cursor: pointer; border: 2px solid transparent;"></div>`).join('')}
+                </div>
+                <textarea id="ct-global-tag-desc" placeholder="Описание тега..." style="width:100%; height:80px; padding:8px; border-radius:5px; border:1px solid #555; background:#222; color:#fff; resize:none; box-sizing:border-box;"></textarea>
+                <div style="display:flex; gap:5px; flex-wrap:wrap;">
+                    <button id="ct-global-tag-save-btn" style="flex:1; min-width: 80px; padding:8px 4px; background:#8db7d5; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; font-size:12px;">СОХРАНИТЬ</button>
+                    <button id="ct-global-tag-del-btn" style="flex:1; min-width: 80px; padding:8px 4px; background:#CD5C5C; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold; font-size:12px;">УДАЛИТЬ</button>
+                    <button id="ct-global-tag-cancel-btn" style="flex:1; min-width: 80px; padding:8px 4px; background:transparent; border:1px solid #555; color:#ddd; border-radius:5px; cursor:pointer; font-weight:bold; font-size:12px;">ОТМЕНА</button>
+                </div>
+            </div>
+        </div>
+        `);
+        
+        $('.ct-global-color-option').off('click').on('click', function() {
+            let c = $(this).data('color');
+            $('#ct-global-tag-modal').data('selected-color', c);
+            $('.ct-global-color-option').css('border-color', 'transparent');
+            $(this).css('border-color', '#fff');
+        });
+        
+        $('#ct-global-tag-cancel-btn').off('click').on('click', () => $('#ct-global-tag-modal-overlay').hide());
+        $('#ct-global-tag-modal-overlay').on('click', function(e) {
+            if (e.target === this) $(this).hide();
+        });
+    }
+    
+    let tagData = null;
+    if (coreChat && coreChat.length > 0 && coreChat[0].chat_tree_tags && coreChat[0].chat_tree_tags[nodeHash]) {
+        tagData = coreChat[0].chat_tree_tags[nodeHash];
+    }
+    
+    $('#ct-global-tag-modal-overlay').css('display', 'flex');
+    if (tagData) {
+        $('#ct-global-tag-desc').val(tagData.desc || '');
+        $('#ct-global-tag-modal').data('selected-color', tagData.color);
+        $('.ct-global-color-option').each(function() {
+            if ($(this).data('color') === tagData.color) $(this).css('border-color', '#fff');
+            else $(this).css('border-color', 'transparent');
+        });
+        $('#ct-global-tag-del-btn').show();
+    } else {
+        $('#ct-global-tag-desc').val('');
+        let defColor = '#8db7d5';
+        $('#ct-global-tag-modal').data('selected-color', defColor);
+        $('.ct-global-color-option').each(function() {
+            if ($(this).data('color') === defColor) $(this).css('border-color', '#fff');
+            else $(this).css('border-color', 'transparent');
+        });
+        $('#ct-global-tag-del-btn').hide();
+    }
+    
+    $('#ct-global-tag-save-btn').off('click').on('click', async function () {
+        if (!coreChat || coreChat.length === 0) return;
+        if (!coreChat[0].chat_tree_tags) coreChat[0].chat_tree_tags = {};
+        coreChat[0].chat_tree_tags[nodeHash] = {
+            color: $('#ct-global-tag-modal').data('selected-color'),
+            desc: $('#ct-global-tag-desc').val(),
+            nodeText: nodeText
+        };
+        if (typeof saveChatConditional === 'function') await saveChatConditional();
+        $('#ct-global-tag-modal-overlay').hide();
+        if (onSaveCallback) onSaveCallback(coreChat[0].chat_tree_tags[nodeHash]);
+        if (typeof window.renderGlobalTags === 'function') window.renderGlobalTags();
+        updateChatUI();
+    });
+    
+    $('#ct-global-tag-del-btn').off('click').on('click', async function () {
+        if (!coreChat || coreChat.length === 0 || !coreChat[0].chat_tree_tags) return;
+        delete coreChat[0].chat_tree_tags[nodeHash];
+        if (typeof saveChatConditional === 'function') await saveChatConditional();
+        $('#ct-global-tag-modal-overlay').hide();
+        if (onDeleteCallback) onDeleteCallback();
+        if (typeof window.renderGlobalTags === 'function') window.renderGlobalTags();
+        updateChatUI();
+    });
+}
+
+function getHashForCoreChatIndex(index) {
+    if (!coreChat || index < 0 || index >= coreChat.length) return null;
+    let stack = [];
+    for(let i = 0; i <= index; i++) {
+        if (!coreChat[i]) continue;
+        stack.push({ msg: coreChat[i], swipeId: coreChat[i].swipe_id || 0 });
+    }
+    return getNodeHash(stack);
+}
+
+function updateChatUI() {
+    if (!coreChat || coreChat.length === 0) return;
+    $('#chat .mes').each(function() {
+        let mesId = $(this).attr('mesid');
+        if (mesId === undefined) return;
+        let index = parseInt(mesId);
+        if (isNaN(index) || index < 0 || index >= coreChat.length) return;
+        
+        let hash = getHashForCoreChatIndex(index);
+        if (!hash) return;
+        
+        let tagData = null;
+        if (coreChat[0].chat_tree_tags && coreChat[0].chat_tree_tags[hash]) {
+            tagData = coreChat[0].chat_tree_tags[hash];
+        }
+        
+        let $buttonsContainer = $(this).find('.mes_buttons');
+        if ($buttonsContainer.length === 0) return;
+        
+        let $existingBtn = $buttonsContainer.find('.ct-inline-tag-btn');
+        if ($existingBtn.length === 0) {
+            $existingBtn = $('<div class="ct-inline-tag-btn" title="Добавить/изменить тег ветки" style="width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--SmartThemeBodyColor, #888); background: transparent; cursor: pointer; margin-right: 5px; opacity: 0.7; transition: 0.2s; align-self: center;"></div>');
+            $existingBtn.hover(function(){ $(this).css('opacity', '1'); }, function(){ $(this).css('opacity', '0.7'); });
+            
+            $existingBtn.on('click', function(e) {
+                e.stopPropagation();
+                let msgText = coreChat[index].swipes ? coreChat[index].swipes[coreChat[index].swipe_id || 0] : coreChat[index].mes;
+                openGlobalTagModal(hash, msgText, null, null);
+            });
+            $buttonsContainer.prepend($existingBtn);
+        }
+        
+        if (tagData) {
+            $existingBtn.css('border-color', tagData.color).css('background', tagData.color).css('opacity', '1');
+            $existingBtn.attr('title', tagData.desc || 'Редактировать тег ветки');
+        } else {
+            $existingBtn.css('border-color', 'var(--SmartThemeBodyColor, #888)').css('background', 'transparent').css('opacity', '0.7');
+            $existingBtn.attr('title', 'Добавить тег ветки');
+        }
+    });
+}
+
+// Следим за изменениями чата для обновления кнопок
+const chatObserver = new MutationObserver((mutations) => {
+    let shouldUpdate = false;
+    for (let m of mutations) {
+        if (m.addedNodes.length > 0 || m.type === 'attributes') {
+            shouldUpdate = true;
+            break;
+        }
+    }
+    if (shouldUpdate) {
+        setTimeout(updateChatUI, 50);
+    }
+});
+$(document).ready(() => {
+    let chatEl = document.getElementById('chat');
+    if (chatEl) {
+        chatObserver.observe(chatEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['mesid'] });
+        setTimeout(updateChatUI, 500);
+    }
+});
+
+// ПАТЧ КОНЕЦ
 
 // ПАТЧ: Нормализованный поиск точки расхождения
 async function deleteBranchTarget(toRestore) {
@@ -259,10 +430,24 @@ function buildHtmlTree(node) {
 
         window.ctNodeMap[n.id] = n.chatToRestoreStack;
         window.ctNodeTextMap[n.id] = n.text;
+        
+        // ПАТЧ: Отрисовка тегов (полная подсветка)
+        let tagData = null;
+        if (coreChat && coreChat.length > 0 && coreChat[0].chat_tree_tags) {
+            tagData = coreChat[0].chat_tree_tags[n.nodeHash];
+        }
+        
+        let customBorder = border;
+        let customShadow = shadowCss;
+        
+        if (tagData) {
+            customBorder = `3px solid ${escapeHtml(tagData.color)}`;
+            customShadow = `box-shadow: 0 0 15px ${escapeHtml(tagData.color)};`;
+        }
 
         html += `
-            <div class="ct-node ${activeClass}" data-id="${n.id}" style="display: block; width: 45px; height: 45px; min-width: 45px; min-height: 45px; max-width: 45px; max-height: 45px; flex-shrink: 0 !important; cursor: pointer; position: relative; z-index: ${n.isActive ? 3 : 1}; margin: 0 auto;">
-                <div title="Нажмите для предпросмотра" style="width:100%; height:100%; border-radius:50%; ${avatarStyle} background-size:cover; border:${border}; ${shadowCss} opacity:${n.isActive ? 1 : 0.6}; transition:0.2s; box-sizing: border-box;"></div>
+            <div class="ct-node ${activeClass}" data-id="${n.id}" data-hash="${n.nodeHash}" style="display: block; width: 45px; height: 45px; min-width: 45px; min-height: 45px; max-width: 45px; max-height: 45px; flex-shrink: 0 !important; cursor: pointer; position: relative; z-index: ${n.isActive ? 3 : 1}; margin: 0 auto;">
+                <div title="Нажмите для предпросмотра" style="width:100%; height:100%; border-radius:50%; ${avatarStyle} background-size:cover; border:${customBorder}; ${customShadow} opacity:${n.isActive ? 1 : 0.8}; transition:0.2s; box-sizing: border-box;"></div>
             </div>`;
 
         if (index < linearNodes.length - 1) {
@@ -440,6 +625,7 @@ function parseArray(msgArray, reconstructStack, activePathAccumulator, virtualFu
 
         let sNode = {
             id: 'node_' + Math.random().toString(36).substr(2, 9),
+            nodeHash: getNodeHash(targetChatToRestoreStack),
             msgData: msg,
             swipeId: s,
             text: swipes[s],
@@ -452,6 +638,53 @@ function parseArray(msgArray, reconstructStack, activePathAccumulator, virtualFu
     }
     return swipeNodes;
 }
+
+// ПАТЧ: Отрисовка глобального списка тегов
+window.renderGlobalTags = function() {
+    let $list = $('#ct-global-tags-list');
+    if (!$list.length) return;
+    $list.empty();
+    
+    if (!coreChat || coreChat.length === 0 || !coreChat[0].chat_tree_tags) return;
+    
+    let tags = coreChat[0].chat_tree_tags;
+    
+    for (let hash in tags) {
+        let tag = tags[hash];
+        
+        let $item = $(`
+            <div class="ct-global-tag" data-hash="${hash}" style="display:flex; flex-direction:column; align-items: flex-end; cursor:pointer; transition:0.2s;">
+                <div style="width:20px; height:20px; border-radius:50%; background:${escapeHtml(tag.color)}; flex-shrink:0; border: 2px solid rgba(255,255,255,0.2);"></div>
+                <div class="ct-tag-desc-box" style="display:none; background:rgba(20,20,20,0.9); backdrop-filter:blur(8px); border:1px solid ${escapeHtml(tag.color)}; border-radius:8px; padding: 10px; color:#ddd; font-size:13px; white-space:pre-wrap; margin-top: 5px; box-shadow:0 4px 12px rgba(0,0,0,0.5); width: max-content; max-width: 200px; text-align: left;">${escapeHtml(tag.desc || 'Без описания')}</div>
+            </div>
+        `);
+        
+        let clickTimer = null;
+        $item.on('click', function(e) {
+            if (clickTimer) {
+                clearTimeout(clickTimer);
+                clickTimer = null;
+                // Double click - ПЕРЕНОС КАМЕРЫ НА УЗЕЛ
+                let $node = $(`.ct-node[data-hash="${hash}"]`);
+                if ($node.length) {
+                    $node.trigger('click');
+                    if (typeof window.ctCenterOnNode === 'function') {
+                        window.ctCenterOnNode($node);
+                    }
+                }
+            } else {
+                clickTimer = setTimeout(() => {
+                    clickTimer = null;
+                    // Single click - РАСКРЫТЬ
+                    let $desc = $(this).find('.ct-tag-desc-box');
+                    $desc.slideToggle(150);
+                }, 250);
+            }
+        });
+        
+        $list.append($item);
+    }
+};
 
 function renderTree() {
     if (!coreChat || coreChat.length === 0) return;
@@ -466,6 +699,7 @@ function renderTree() {
         roots.forEach(root => html += buildHtmlTree(root));
         html += '</ul></div>';
         $('#tree-transform').html(html);
+        renderGlobalTags(); // ПАТЧ: Отрисовываем глобальные теги после построения дерева
     } catch (err) {
         console.error("Chat Tree Render Error:", err);
         $('#tree-transform').html(`<div style="background:white; color:red; padding:20px; border-radius:10px; font-family:sans-serif; max-width: 600px; white-space: pre-wrap;"><b>Критическая ошибка рендера:</b><br>${err.message}<br><br>${err.stack}</div>`);
@@ -479,12 +713,48 @@ function renderTree() {
         $(this).addClass('ct-selected');
 
         const id = $(this).data('id');
+        const nodeHash = $(this).data('hash');
         const toRestoreStack = window.ctNodeMap[id];
         const nodeText = window.ctNodeTextMap[id] || "(пустое сообщение)";
         if (!toRestoreStack) return;
 
         $('#ct-preview-panel').css('display', 'flex');
         $('#ct-preview-text').html(escapeHtml(nodeText).replace(/\n/g, '<br>'));
+
+        // ПАТЧ: Настройка тега (Модалка)
+        let tagData = null;
+        if (coreChat && coreChat.length > 0 && coreChat[0].chat_tree_tags && coreChat[0].chat_tree_tags[nodeHash]) {
+            tagData = coreChat[0].chat_tree_tags[nodeHash];
+        }
+        
+        let $trigger = $('#ct-tag-trigger');
+        if (tagData) {
+            $trigger.css('background', tagData.color).css('border-color', tagData.color);
+        } else {
+            $trigger.css('background', 'transparent').css('border-color', '#555');
+        }
+
+        $trigger.off('click').on('click', function(e) {
+            e.stopPropagation();
+            openGlobalTagModal(nodeHash, nodeText, 
+                (newTagData) => {
+                    // On Save
+                    $trigger.css('background', newTagData.color).css('border-color', newTagData.color);
+                    let $node = $(`.ct-node[data-hash="${nodeHash}"] > div`);
+                    $node.css('border', `3px solid ${newTagData.color}`);
+                    $node.css('box-shadow', `0 0 15px ${newTagData.color}`);
+                },
+                () => {
+                    // On Delete
+                    $trigger.css('background', 'transparent').css('border-color', '#555');
+                    let $nodeDiv = $(`.ct-node[data-hash="${nodeHash}"] > div`);
+                    let $nodeParent = $(`.ct-node[data-hash="${nodeHash}"]`);
+                    let isNodeActive = $nodeParent.hasClass('active-node');
+                    $nodeDiv.css('border', isNodeActive ? '3px solid #8db7d5' : '2px solid rgba(255,255,255,0.2)');
+                    $nodeDiv.css('box-shadow', isNodeActive ? '0 0 15px #8db7d5' : ($nodeParent.children('ul').length > 0 ? '0 0 10px #00aaff' : 'none'));
+                }
+            );
+        });
 
         $('#ct-delete-btn').off('click').on('click', async function () {
             if (confirm("Вы точно хотите безвозвратно удалить это сообщение и всю ветку, идущую после него?")) {
@@ -653,7 +923,7 @@ function showTreeModal() {
     <div id="chat-tree-modal" style="position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.95); z-index:9999; display:flex; font-family: sans-serif;">
         <div id="tree-container" style="flex:1; overflow:hidden; position:relative; touch-action: none;">
             <div id="tree-transform" style="transform-origin: 0 0; position:absolute; top:0; left:0; width: max-content; height: max-content; min-width: 100%; min-height: 100%;"></div>
-            
+
             <div style="position: absolute; top: 15px; left: 50%; transform: translateX(-50%); display: flex; align-items: stretch; gap: 10px; z-index: 1000; width: 90%; max-width: 600px; height: 42px;">
                 <div class="ct-search-box">
                     <svg fill="none" class="ct-search-icon" stroke="#8db7d5" stroke-width="2.5" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
@@ -667,15 +937,24 @@ function showTreeModal() {
                     </svg>
                 </button>
                 <button id="ct-close-btn" class="ct-btn ct-btn-close" title="Закрыть дерево (Esc)">&times;</button>
+                
+                <!-- ПАТЧ: Глобальный список тегов -->
+                <div id="ct-global-tags-list" style="position: absolute; top: 50px; right: 0; display: flex; flex-direction: column; gap: 8px; z-index: 1000; max-height: calc(100vh - 100px); overflow-y: auto; width: 220px;">
+                </div>
             </div>
         </div>
-        
-        <div id="ct-preview-panel" style="display:none; position:absolute; bottom:80px; left:20px; right:20px; background:#111; border: 2px solid #333; border-radius: 10px; padding: 15px; flex-direction: column; z-index: 10000; max-height: 40vh;">
+
+        <div id="ct-preview-panel" style="display:none; position:absolute; bottom:80px; left:20px; right:20px; background:#111; border: 2px solid #333; border-radius: 10px; padding: 15px; flex-direction: column; z-index: 10000; max-height: 40vh; max-width: 800px; margin: 0 auto;">
             <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 10px;">
-                <span style="color: #8db7d5; font-family: 'Caveat', cursive; font-weight: 600; font-size: 22px; letter-spacing: 0.5px;">Предпросмотр сообщения</span>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="color: #8db7d5; font-family: 'Caveat', cursive; font-weight: 600; font-size: 22px; letter-spacing: 0.5px;">Предпросмотр сообщения</span>
+                    <!-- ПАТЧ: Кнопка открытия редактора тегов -->
+                    <div id="ct-tag-trigger" style="width: 20px; height: 20px; border-radius: 50%; border: 2px solid #555; background: transparent; cursor: pointer; transition: 0.2s;" title="Добавить/изменить тег"></div>
+                </div>
                 <button id="ct-preview-close" style="background: transparent; border: none; color: #fff; font-size: 20px; cursor: pointer;">&times;</button>
             </div>
-            <div id="ct-preview-text" style="color: #ddd; flex: 1; overflow-y: auto; font-size: 14px; line-height: 1.4; margin-bottom: 15px;"></div>
+            <div id="ct-preview-text" style="color: #ddd; flex: 1; overflow-y: auto; font-size: 14px; line-height: 1.4; margin-bottom: 15px; padding-right: 5px;"></div>
+
             <div style="display:flex; gap:10px;">
                 <button id="ct-jump-btn" style="flex:1; padding:10px; background:#8db7d5; color:#111; border:none; border-radius:5px; cursor:pointer; font-weight:bold; font-size:15px;">ПРЫЖОК</button>
                 <button id="ct-delete-btn" style="flex:1; padding:10px; background:#CD5C5C; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold; font-size:15px;">УДАЛИТЬ</button>
@@ -697,8 +976,15 @@ function showTreeModal() {
             $('.ct-node').each(function () {
                 if (!val) { $(this).css('box-shadow', ''); return; }
                 let id = $(this).data('id');
-                let text = window.ctNodeTextMap[id];
-                if (text && text.toLowerCase().includes(val)) {
+                let hash = $(this).data('hash');
+                let text = window.ctNodeTextMap[id] || "";
+                
+                let tagText = "";
+                if (coreChat && coreChat.length > 0 && coreChat[0].chat_tree_tags && coreChat[0].chat_tree_tags[hash]) {
+                    tagText = (coreChat[0].chat_tree_tags[hash].desc || "").toLowerCase();
+                }
+
+                if (text.toLowerCase().includes(val) || (tagText && tagText.includes(val))) {
                     $(this).css('box-shadow', '0 0 20px 8px rgba(255, 255, 0, 0.8)');
                 } else {
                     $(this).css('box-shadow', '');
@@ -725,20 +1011,25 @@ function showTreeModal() {
         update();
     }, 50);
 
+    // ПАТЧ: Функция для фокусировки на произвольном узле
+    window.ctCenterOnNode = function($node) {
+        if (!$node || !$node.length) return;
+        let activeRect = $node[0].getBoundingClientRect();
+        let tfRect = tf.getBoundingClientRect();
+        let relX = (activeRect.left - tfRect.left + activeRect.width / 2) / scale;
+        let relY = (activeRect.top - tfRect.top + activeRect.height / 2) / scale;
+        let vpRect = vp.getBoundingClientRect();
+        posX = vpRect.width / 2 - relX * scale;
+        posY = vpRect.height / 3 - relY * scale;
+        tf.style.transition = 'transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)';
+        update();
+        setTimeout(() => { tf.style.transition = ''; }, 400);
+    };
+
     $('#ct-center-btn').on('click', function () {
         let activeNodes = $('.active-node');
         if (activeNodes.length > 0) {
-            let activeNode = activeNodes.last();
-            let activeRect = activeNode[0].getBoundingClientRect();
-            let tfRect = tf.getBoundingClientRect();
-            let relX = (activeRect.left - tfRect.left + activeRect.width / 2) / scale;
-            let relY = (activeRect.top - tfRect.top + activeRect.height / 2) / scale;
-            let vpRect = vp.getBoundingClientRect();
-            posX = vpRect.width / 2 - relX * scale;
-            posY = vpRect.height / 3 - relY * scale;
-            tf.style.transition = 'transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)';
-            update();
-            setTimeout(() => { tf.style.transition = ''; }, 400);
+            window.ctCenterOnNode(activeNodes.last());
         }
     });
 
