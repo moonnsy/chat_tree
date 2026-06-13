@@ -1,6 +1,6 @@
 {
-    "name": "Chat Tree",
-    "display_name": "Chat Tree (One File)",
+    "name": "Chat-Tree",
+    "display_name": "Chat-Tree",
     "description": "Управление ветками внутри одного .jsonl файла",
     "author": "Moonnsy",
     "version": "1.5.0",

@@ -6,13 +6,50 @@ let activeSwipes = {};
 let isBusy = false;
 let syncTimer = null;
 
+// ПАТЧ: Синхронизация текста и свайпов (глобально)
+function syncMesAndSwipesGlobal(chatArray) {
+    if (!chatArray) return;
+    chatArray.forEach(m => {
+        if (!m) return;
+        let sId = m.swipe_id || 0;
+        if (m.swipes && m.swipes.length > sId) {
+            if (m.mes && m.mes !== m.swipes[sId]) {
+                m.swipes[sId] = m.mes;
+            }
+        } else if (!m.swipes && m.mes) {
+            m.swipes = [m.mes];
+            m.swipe_id = 0;
+        }
+    });
+}
+
 function cloneChat(chatArray) {
     if (!chatArray) return [];
     return chatArray.map(m => {
         if (!m) return m;
         let cloned = { ...m };
-        if (m.swipes) cloned.swipes = [...m.swipes];
-        if (m.branch_futures) cloned.branch_futures = JSON.parse(JSON.stringify(m.branch_futures));
+        if (Array.isArray(m.swipes)) {
+            cloned.swipes = [...m.swipes];
+        } else if (m.swipes) {
+            cloned.swipes = Array.from(m.swipes);
+        }
+        if (Array.isArray(m.swipe_info)) {
+            cloned.swipe_info = m.swipe_info.map(info => {
+                try {
+                    return info ? JSON.parse(JSON.stringify(info)) : info;
+                } catch(e) {
+                    return info ? { ...info } : info;
+                }
+            });
+        }
+        // ПАТЧ: extra копируется только поверхностно (по ссылке через { ...m }), чтобы не ломать внешние DOM-блоки (dreamalbum)
+        if (m.branch_futures) {
+            try {
+                cloned.branch_futures = JSON.parse(JSON.stringify(m.branch_futures));
+            } catch (e) {
+                cloned.branch_futures = {};
+            }
+        }
         return cloned;
     });
 }
@@ -20,11 +57,61 @@ function cloneChat(chatArray) {
 function cloneMessageWithSwipe(msg, s) {
     if (!msg) return msg;
     let cloned = { ...msg };
-    if (msg.swipes) cloned.swipes = [...msg.swipes];
+    if (Array.isArray(msg.swipes)) {
+        cloned.swipes = [...msg.swipes];
+    } else if (msg.swipes) {
+        cloned.swipes = Array.from(msg.swipes);
+    }
+    if (Array.isArray(msg.swipe_info)) {
+        cloned.swipe_info = msg.swipe_info.map(info => {
+            try {
+                return info ? JSON.parse(JSON.stringify(info)) : info;
+            } catch(e) {
+                return info ? { ...info } : info;
+            }
+        });
+    }
     cloned.swipe_id = s;
-    cloned.mes = msg.swipes ? msg.swipes[s] : msg.mes;
-    if (msg.branch_futures) cloned.branch_futures = JSON.parse(JSON.stringify(msg.branch_futures));
+    cloned.mes = Array.isArray(msg.swipes) && msg.swipes.length > s ? msg.swipes[s] : msg.mes;
+
+    // ПАТЧ: Восстанавливаем extra из конкретного свайпа (swipe_info) в корень сообщения, 
+    // чтобы внешние расширения (например, DreamAlbum) видели актуальный блок после прыжка.
+    if (cloned.swipe_info && cloned.swipe_info[s]) {
+        if (cloned.swipe_info[s].extra !== undefined) {
+            cloned.extra = JSON.parse(JSON.stringify(cloned.swipe_info[s].extra));
+        } else {
+            delete cloned.extra;
+        }
+    }
+
+    if (msg.branch_futures) {
+        try {
+            cloned.branch_futures = JSON.parse(JSON.stringify(msg.branch_futures));
+        } catch (e) {
+            cloned.branch_futures = {};
+        }
+    }
     return cloned;
+}
+
+// ПАТЧ: Универсальное сравнение узлов
+function isNodeMatch(a, b) {
+    if (!a || !b) return a === b;
+    let aUser = String(a.is_user) === 'true';
+    let bUser = String(b.is_user) === 'true';
+    if (aUser !== bUser) return false;
+
+    if (a.send_date && b.send_date && a.send_date === b.send_date) return true;
+
+    let aMes = (a.mes || "").trim().replace(/\r\n/g, '\n');
+    let bMes = (b.mes || "").trim().replace(/\r\n/g, '\n');
+    if (aMes === bMes) return true;
+
+    let aNoSrc = aMes.replace(/src="[^"]*"/g, '').replace(/\[IMG:GEN\]/g, '').trim();
+    let bNoSrc = bMes.replace(/src="[^"]*"/g, '').replace(/\[IMG:GEN\]/g, '').trim();
+    if (aNoSrc === bNoSrc && aNoSrc.length > 0) return true;
+
+    return false;
 }
 
 // ПАТЧ: Безопасное сравнение путей для старых чатов
@@ -32,17 +119,7 @@ function isPathDuplicate(pathA, pathB) {
     if (!pathA || !pathB) return false;
     if (pathA.length !== pathB.length) return false;
     for (let i = 0; i < pathA.length; i++) {
-        let a = pathA[i], b = pathB[i];
-        if (!a || !b) {
-            if (a !== b) return false;
-            continue;
-        }
-        let aUser = String(a.is_user) === 'true';
-        let bUser = String(b.is_user) === 'true';
-        let aMes = (a.mes || "").trim().replace(/\r\n/g, '\n');
-        let bMes = (b.mes || "").trim().replace(/\r\n/g, '\n');
-        
-        if (aMes !== bMes || aUser !== bUser) return false;
+        if (!isNodeMatch(pathA[i], pathB[i])) return false;
     }
     return true;
 }
@@ -55,19 +132,31 @@ function msgFingerprint(m) {
 }
 
 function isGhost(m) {
-    if (!m) return true;
-    if (m.mes && m.mes.trim() !== '') return false;
-    if (m.swipes && m.swipes.some(s => s && s.trim() !== '')) return false;
-    return true;
+    try {
+        if (!m) return true;
+        if (m.mes && typeof m.mes === 'string' && m.mes.trim() !== '') return false;
+        if (Array.isArray(m.swipes) && m.swipes.some(s => s && typeof s === 'string' && s.trim() !== '')) return false;
+        // ПАТЧ: Защита внешних блоков (dreamalbum и др.), у которых может не быть текста
+        if (m.extra && typeof m.extra === 'object' && Object.keys(m.extra).length > 0) return false;
+        if (m.is_system) return false;
+        return true;
+    } catch (e) {
+        console.warn("chat-tree: Error in isGhost", e, m);
+        return false;
+    }
 }
 
 function getNodeHash(stack) {
     if (!stack) return "";
-    let texts = stack.map(m => {
+    let identifiers = stack.map(m => {
+        // ПАТЧ: Стабильный хэш на основе send_date, чтобы метки не пропадали при редактировании/генерации картинок
+        if (m.msg.send_date) {
+            return `${m.msg.is_user}_${m.swipeId}_${m.msg.send_date}`;
+        }
         let text = (m.msg.swipes && m.msg.swipes.length > m.swipeId) ? m.msg.swipes[m.swipeId] : m.msg.mes;
         return (text || "").trim();
     });
-    let s = texts.join('||');
+    let s = identifiers.join('||');
     let h = 0, l = s.length, i = 0;
     if (l > 0) while (i < l) h = (h << 5) - h + s.charCodeAt(i++) | 0;
     return "tag_" + h.toString(36);
@@ -193,16 +282,17 @@ function updateChatUI() {
         
         let $existingBtn = $buttonsContainer.find('.ct-inline-tag-btn');
         if ($existingBtn.length === 0) {
-            $existingBtn = $('<div class="ct-inline-tag-btn" title="Добавить/изменить тег ветки" style="width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--SmartThemeBodyColor, #888); background: transparent; cursor: pointer; margin-right: 5px; opacity: 0.7; transition: 0.2s; align-self: center;"></div>');
+            $existingBtn = $('<div class="ct-inline-tag-btn" title="Добавить/изменить тег ветки" style="width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--SmartThemeBodyColor, #888); background: transparent; cursor: pointer; margin-right: 5px; opacity: 0.7; transition: 0.2s; align-self: center; display: inline-block; vertical-align: middle;"></div>');
             $existingBtn.hover(function(){ $(this).css('opacity', '1'); }, function(){ $(this).css('opacity', '0.7'); });
-            
-            $existingBtn.on('click', function(e) {
-                e.stopPropagation();
-                let msgText = coreChat[index].swipes ? coreChat[index].swipes[coreChat[index].swipe_id || 0] : coreChat[index].mes;
-                openGlobalTagModal(hash, msgText, null, null);
-            });
             $buttonsContainer.prepend($existingBtn);
         }
+        
+        // ПАТЧ: Перепривязываем событие каждый раз, чтобы использовать актуальный hash (а не из замыкания)
+        $existingBtn.off('click').on('click', function(e) {
+            e.stopPropagation();
+            let msgText = coreChat[index].swipes ? coreChat[index].swipes[coreChat[index].swipe_id || 0] : coreChat[index].mes;
+            openGlobalTagModal(hash, msgText, null, null);
+        });
         
         if (tagData) {
             $existingBtn.css('border-color', tagData.color).css('background', tagData.color).css('opacity', '1');
@@ -237,18 +327,51 @@ $(document).ready(() => {
 
 // ПАТЧ КОНЕЦ
 
+// ПАТЧ: Функция для безопасного удаления одного свайпа
+function removeSwipeFromMessage(msg, swipeId) {
+    if (!msg || !msg.swipes || msg.swipes.length <= 1) return false; // Указывает, что нужно удалить всё сообщение
+
+    msg.swipes.splice(swipeId, 1);
+
+    if (msg.swipe_info && msg.swipe_info.length > swipeId) {
+        msg.swipe_info.splice(swipeId, 1);
+    }
+
+    if (msg.branch_futures) {
+        let newFutures = {};
+        for (let k in msg.branch_futures) {
+            let idx = parseInt(k);
+            if (idx > swipeId) {
+                newFutures[idx - 1] = msg.branch_futures[k];
+            } else if (idx < swipeId) {
+                newFutures[idx] = msg.branch_futures[k];
+            }
+        }
+        msg.branch_futures = newFutures;
+    }
+
+    let oldActive = msg.swipe_id || 0;
+    if (oldActive === swipeId) {
+        msg.swipe_id = Math.max(0, swipeId - 1);
+        msg.mes = msg.swipes[msg.swipe_id];
+        if (msg.swipe_info && msg.swipe_info[msg.swipe_id] && msg.swipe_info[msg.swipe_id].extra !== undefined) {
+            msg.extra = JSON.parse(JSON.stringify(msg.swipe_info[msg.swipe_id].extra));
+        } else {
+            delete msg.extra;
+        }
+    } else if (oldActive > swipeId) {
+        msg.swipe_id--;
+    }
+    return true; // Указывает, что сообщение выжило (удалили только свайп)
+}
+
 // ПАТЧ: Нормализованный поиск точки расхождения
-async function deleteBranchTarget(toRestore) {
+async function deleteBranchTarget(toRestore, targetSwipeId = null) {
     if (!toRestore || toRestore.length === 0) return;
 
     let divergeIdx = -1;
     for (let i = 0; i < Math.min(coreChat.length, toRestore.length); i++) {
-        let cUser = String(coreChat[i].is_user) === 'true';
-        let rUser = String(toRestore[i].is_user) === 'true';
-        let cMes = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
-        let rMes = (toRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
-
-        if (cMes !== rMes || cUser !== rUser) {
+        if (!isNodeMatch(coreChat[i], toRestore[i])) {
             divergeIdx = i;
             break;
         }
@@ -257,20 +380,66 @@ async function deleteBranchTarget(toRestore) {
         divergeIdx = Math.min(coreChat.length, toRestore.length);
     }
 
+    let deletedAtLeastOne = false;
+
     if (divergeIdx === toRestore.length) {
-        coreChat.length = toRestore.length - 1;
-        if (typeof saveChatConditional === 'function') await saveChatConditional();
-        if (typeof reloadCurrentChat === 'function') await reloadCurrentChat();
-        return;
+        if (targetSwipeId !== null) {
+            let targetMsg = coreChat[toRestore.length - 1];
+            let oldActive = targetMsg.swipe_id || 0;
+            let wasActiveSwipe = (oldActive === targetSwipeId);
+            let survived = removeSwipeFromMessage(targetMsg, targetSwipeId);
+            if (!survived) {
+                coreChat.length = toRestore.length - 1;
+            } else if (wasActiveSwipe) {
+                coreChat.length = toRestore.length; // Удаляем хвост после сообщения
+            }
+        } else {
+            coreChat.length = toRestore.length - 1;
+        }
+        deletedAtLeastOne = true;
     }
 
-    if (divergeIdx > 0) {
-        let ancestorIdx = divergeIdx - 1;
-        let ancestor = coreChat[ancestorIdx];
+    // Собираем ВСЕ сообщения, которые есть в текущем чате и его ветках
+    let allMsgs = [];
+    let visited = new Set();
+    function collect(msgs) {
+        if (!msgs || !Array.isArray(msgs)) return;
+        msgs.forEach(m => {
+            if (!m || visited.has(m)) return;
+            visited.add(m);
+            allMsgs.push(m);
+            if (m.branch_futures) {
+                for (let k in m.branch_futures) {
+                    let entries = m.branch_futures[k];
+                    if (!Array.isArray(entries)) continue;
+                    if (entries.length > 0 && !Array.isArray(entries[0])) {
+                        collect(entries);
+                    } else {
+                        entries.forEach(e => collect(e));
+                    }
+                }
+            }
+        });
+    }
+    collect(coreChat);
 
-        if (ancestor && ancestor.branch_futures) {
-            let branchToMatch = toRestore.slice(divergeIdx);
-            let deletedAtLeastOne = false;
+    // Проходим по всем сообщениям и вычищаем из их веток удаляемый хвост
+    allMsgs.forEach(ancestor => {
+        if (!ancestor || !ancestor.branch_futures) return;
+
+        // Проверяем каждый возможный суффикс toRestore, так как ветка могла начаться с любого места
+        for (let startIdx = 0; startIdx < toRestore.length; startIdx++) {
+            let pathTail = toRestore.slice(startIdx);
+            if (pathTail.length === 0) continue;
+
+            // ПАТЧ: Также удаляем тег этого узла, если он есть
+            if (coreChat[0].chat_tree_tags) {
+                let stack = toRestore.slice(0, startIdx + pathTail.length);
+                let nodeHash = getNodeHash(stack.map(m => ({ msg: m, swipeId: m.swipe_id || 0 })));
+                if (coreChat[0].chat_tree_tags[nodeHash]) {
+                    delete coreChat[0].chat_tree_tags[nodeHash];
+                }
+            }
 
             for (let swipeKey in ancestor.branch_futures) {
                 let futures = ancestor.branch_futures[swipeKey];
@@ -285,30 +454,69 @@ async function deleteBranchTarget(toRestore) {
                     let candidate = futures[f];
                     if (!Array.isArray(candidate) || candidate.length === 0 || !candidate[0]) continue;
 
-                    let fpCandidate = msgFingerprint(candidate[0]);
-                    let fpTarget = msgFingerprint(branchToMatch[0]);
+                    // Проверяем, совпадает ли начало этого кандидата с pathTail
+                    let matches = true;
+                    for (let k = 0; k < pathTail.length; k++) {
+                        if (k >= candidate.length || !isNodeMatch(candidate[k], pathTail[k])) {
+                            matches = false;
+                            break;
+                        }
+                    }
 
-                    let candUser = String(candidate[0].is_user) === 'true';
-                    let tgtUser = String(branchToMatch[0].is_user) === 'true';
+                    if (matches) {
+                        let truncateIdx = pathTail.length - 1;
+                        let targetMsg = candidate[truncateIdx];
 
-                    if (fpCandidate === fpTarget && candUser === tgtUser) {
-                        futures.splice(f, 1);
-                        deletedAtLeastOne = true;
+                        if (targetSwipeId !== null) {
+                            let oldActive = targetMsg.swipe_id || 0;
+                            let wasActiveSwipe = (oldActive === targetSwipeId);
+                            let survived = removeSwipeFromMessage(targetMsg, targetSwipeId);
+
+                            if (survived) {
+                                if (wasActiveSwipe) {
+                                    futures[f] = candidate.slice(0, truncateIdx + 1);
+                                }
+                                deletedAtLeastOne = true;
+                            } else {
+                                if (truncateIdx === 0) {
+                                    futures.splice(f, 1);
+                                } else {
+                                    futures[f] = candidate.slice(0, truncateIdx);
+                                }
+                                deletedAtLeastOne = true;
+                            }
+                        } else {
+                            if (truncateIdx === 0) {
+                                futures.splice(f, 1);
+                            } else {
+                                futures[f] = candidate.slice(0, truncateIdx);
+                            }
+                            deletedAtLeastOne = true;
+                        }
                     }
                 }
             }
-
-            if (deletedAtLeastOne) {
-                if (typeof saveChatConditional === 'function') await saveChatConditional();
-                if (typeof reloadCurrentChat === 'function') await reloadCurrentChat();
-                return;
-            }
         }
+    });
+
+    if (deletedAtLeastOne) {
+        if (typeof saveChatConditional === 'function') await saveChatConditional();
+        if (typeof reloadCurrentChat === 'function') await reloadCurrentChat();
     }
 }
 
 function syncShadow() {
     if (!coreChat) return;
+    
+    // ПАТЧ: Проверка на удаление перед обновлением shadowChat.
+    // Если длина уменьшилась, значит хвост был удален.
+    if (shadowChat && shadowChat.length > coreChat.length) {
+        let pathToDelete = shadowChat.slice(0, coreChat.length + 1);
+        deleteBranchTarget(pathToDelete).catch(e => console.error("chat-tree: Error in auto-delete", e));
+    }
+
+    syncMesAndSwipesGlobal(coreChat);
+
     shadowChat = cloneChat(coreChat);
     activeSwipes = {};
     coreChat.forEach((m, i) => {
@@ -324,7 +532,23 @@ function syncShadowDebounced() {
 eventSource.on(event_types.CHAT_CHANGED, syncShadow);
 eventSource.on(event_types.MESSAGE_RECEIVED, syncShadowDebounced);
 eventSource.on(event_types.MESSAGE_SENT, syncShadowDebounced);
-eventSource.on(event_types.MESSAGE_DELETED, syncShadow);
+eventSource.on(event_types.MESSAGE_DELETED, async () => {
+    if (shadowChat && coreChat && coreChat.length < shadowChat.length) {
+        // ПАТЧ: Точное определение удаленного узла для полного стирания ветки
+        let deletedIdx = -1;
+        for (let i = 0; i < shadowChat.length; i++) {
+            if (i >= coreChat.length || !isNodeMatch(shadowChat[i], coreChat[i])) {
+                deletedIdx = i;
+                break;
+            }
+        }
+        if (deletedIdx !== -1) {
+            let pathToDelete = shadowChat.slice(0, deletedIdx + 1);
+            await deleteBranchTarget(pathToDelete);
+        }
+    }
+    syncShadow();
+});
 eventSource.on(event_types.MESSAGE_EDITED, syncShadowDebounced);
 
 eventSource.on(event_types.MESSAGE_SWIPED, async (id) => {
@@ -348,13 +572,17 @@ eventSource.on(event_types.MESSAGE_SWIPED, async (id) => {
             let entries = msg.branch_futures[key];
             if (!Array.isArray(entries)) continue;
             if (entries.length > 0 && !Array.isArray(entries[0])) entries = [entries];
-            for (let entry of entries) {
-                if (isPathDuplicate(entry, newFuture)) {
+            for (let k = 0; k < entries.length; k++) {
+                if (isPathDuplicate(entries[k], newFuture)) {
                     alreadyExists = true;
+                    entries[k] = newFuture; // Запоминаем последнее состояние (актуальный текст/картинку)
                     break;
                 }
             }
-            if (alreadyExists) break;
+            if (alreadyExists) {
+                msg.branch_futures[key] = entries;
+                break;
+            }
         }
 
         if (!alreadyExists) {
@@ -476,22 +704,46 @@ function unifyMessages(baseMsg, incMsg) {
     let baseSwipes = clone.swipes || [clone.mes];
     let incSwipes = incMsg.swipes || [incMsg.mes];
 
+    let baseSwipesInfo = clone.swipe_info || [{}];
+    let incSwipesInfo = incMsg.swipe_info || [{}];
+
     clone.swipes = [...baseSwipes];
+    clone.swipe_info = baseSwipesInfo.map(info => info ? { ...info } : info);
     clone.branch_futures = clone.branch_futures || {};
 
     let incToBaseMap = {};
+
+    let sameMessage = false;
+    if (clone.send_date && incMsg.send_date && clone.send_date === incMsg.send_date) {
+        sameMessage = true;
+    }
 
     for (let i = 0; i < incSwipes.length; i++) {
         let text = incSwipes[i] || "";
         let cleanText = text.trim().replace(/\r\n/g, '\n');
         
-        let existingIdx = clone.swipes.findIndex(s => (s || "").trim().replace(/\r\n/g, '\n') === cleanText);
+        let existingIdx = -1;
+        if (sameMessage && i < clone.swipes.length) {
+            existingIdx = i; // ПАТЧ: Если это то же сообщение, объединяем свайпы по индексу, а не по тексту (чтобы не дублировать [IMG:GEN] и готовую картинку)
+        } else {
+            existingIdx = clone.swipes.findIndex(s => {
+                let sClean = (s || "").trim().replace(/\r\n/g, '\n');
+                if (sClean === cleanText) return true;
+                
+                // ПАТЧ: Эвристика для склейки старых дублей свайпов с [IMG:GEN]
+                let sNoSrc = sClean.replace(/src="[^"]*"/g, '').replace(/\[IMG:GEN\]/g, '').trim();
+                let cNoSrc = cleanText.replace(/src="[^"]*"/g, '').replace(/\[IMG:GEN\]/g, '').trim();
+                return (sNoSrc === cNoSrc && sNoSrc.length > 0);
+            });
+        }
         
         if (existingIdx !== -1) {
             incToBaseMap[i] = existingIdx;
         } else {
             let newIdx = clone.swipes.length;
             clone.swipes.push(text);
+            let infoToPush = incSwipesInfo[i] ? { ...incSwipesInfo[i] } : {};
+            clone.swipe_info.push(infoToPush);
             incToBaseMap[i] = newIdx;
         }
     }
@@ -514,9 +766,10 @@ function unifyMessages(baseMsg, incMsg) {
                 if (isGhost(incF[0])) continue;
 
                 let alreadyExists = false;
-                for (let exF of existingFutures) {
-                    if (isPathDuplicate(exF, incF)) {
+                for (let k = 0; k < existingFutures.length; k++) {
+                    if (isPathDuplicate(existingFutures[k], incF)) {
                         alreadyExists = true;
+                        // ПАТЧ: НЕ ПЕРЕЗАПИСЫВАТЬ existingFutures[k]! existingFutures берется из coreChat (где картинка уже сгенерирована), а incF - из старого branch_futures (где еще [IMG:GEN])
                         break;
                     }
                 }
@@ -686,14 +939,44 @@ window.renderGlobalTags = function() {
     }
 };
 
+function scrubOrphanedTags(roots) {
+    if (!coreChat || coreChat.length === 0 || !coreChat[0].chat_tree_tags) return;
+    
+    let validHashes = new Set();
+    function collect(nodes) {
+        nodes.forEach(n => {
+            validHashes.add(n.nodeHash);
+            if (n.children) collect(n.children);
+        });
+    }
+    collect(roots);
+    
+    let tags = coreChat[0].chat_tree_tags;
+    let deletedCount = 0;
+    for (let hash in tags) {
+        if (!validHashes.has(hash)) {
+            delete tags[hash];
+            deletedCount++;
+        }
+    }
+    if (deletedCount > 0) {
+        console.log(`chat-tree: Scrubbed ${deletedCount} orphaned tags.`);
+        if (typeof saveChatConditional === 'function') saveChatConditional();
+    }
+}
+
 function renderTree() {
     if (!coreChat || coreChat.length === 0) return;
+
+    syncMesAndSwipesGlobal(coreChat);
 
     window.ctNodeMap = {};
     window.ctNodeTextMap = {};
 
     try {
         let roots = parseArray(coreChat, [], true);
+        scrubOrphanedTags(roots); // ПАТЧ: Очистка "призрачных" тегов
+        
         let html = '<div class="ct-tree-container" style="padding: 60px 40px; width: max-content; min-width: 100%; height: max-content; display:flex; justify-content:center; padding-bottom: 300px;">';
         html += '<ul style="margin:0; padding:0;">';
         roots.forEach(root => html += buildHtmlTree(root));
@@ -757,15 +1040,20 @@ function renderTree() {
         });
 
         $('#ct-delete-btn').off('click').on('click', async function () {
-            if (confirm("Вы точно хотите безвозвратно удалить это сообщение и всю ветку, идущую после него?")) {
+            if (confirm("Вы точно хотите безвозвратно удалить этот свайп (или всё сообщение) и всю ветку, идущую после него?")) {
                 let toRestore = buildRestoreArray(toRestoreStack);
-                await deleteBranchTarget(toRestore);
+                let targetSwipeId = null;
+                if (toRestoreStack && toRestoreStack.length > 0) {
+                    targetSwipeId = toRestoreStack[toRestoreStack.length - 1].swipeId;
+                }
+                await deleteBranchTarget(toRestore, targetSwipeId);
                 $(this).closest('#chat-tree-modal').remove();
                 if (typeof showTreeModal === 'function') setTimeout(showTreeModal, 200);
             }
         });
 
         $('#ct-jump-btn').off('click').on('click', async function () {
+            syncMesAndSwipesGlobal(coreChat);
             let safeToRestore = buildRestoreArray(toRestoreStack);
 
             // ПАТЧ: Очищенная проверка совпадений для безопасного прыжка
@@ -781,6 +1069,10 @@ function renderTree() {
                     let cSwipesClean = cSwipes.map(s => (s || "").trim().replace(/\r\n/g, '\n'));
 
                     let isSameMsg = rSwipesClean.includes(cMesClean) || cSwipesClean.includes(rMesClean);
+                    
+                    if (!isSameMsg && coreChat[i].send_date && safeToRestore[i].send_date && coreChat[i].send_date === safeToRestore[i].send_date) {
+                        isSameMsg = true; // Это то же самое сообщение, просто обновленное пользователем или генератором
+                    }
 
                     if (isSameMsg) {
                         let unifiedObj = unifyMessages(coreChat[i], safeToRestore[i]);
@@ -793,11 +1085,21 @@ function renderTree() {
                         
                         if (newIdx === -1) {
                             unifiedMsg.swipes.push(targetText);
+                            unifiedMsg.swipe_info = unifiedMsg.swipe_info || [];
+                            let infoToPush = safeToRestore[i].swipe_info ? safeToRestore[i].swipe_info[safeToRestore[i].swipe_id] : {};
+                            unifiedMsg.swipe_info.push(infoToPush ? { ...infoToPush } : {});
                             newIdx = unifiedMsg.swipes.length - 1;
                         }
                         unifiedMsg.swipe_id = newIdx;
                         unifiedMsg.mes = targetText;
                         unifiedMsg.is_user = safeToRestore[i].is_user;
+
+                        // ПАТЧ: Восстанавливаем extra из целевой ветки, чтобы внешние блоки отображали данные нужного свайпа/ветки
+                        if (safeToRestore[i].extra !== undefined) {
+                            unifiedMsg.extra = safeToRestore[i].extra;
+                        } else {
+                            delete unifiedMsg.extra;
+                        }
 
                         safeToRestore[i] = unifiedMsg;
                     }
@@ -807,12 +1109,7 @@ function renderTree() {
             // ПАТЧ: Нормализованный поиск точки расхождения
             let divergeIdx = -1;
             for (let i = 0; i < Math.min(coreChat.length, safeToRestore.length); i++) {
-                let cUser = String(coreChat[i].is_user) === 'true';
-                let sUser = String(safeToRestore[i].is_user) === 'true';
-                let cMes = (coreChat[i].mes || "").trim().replace(/\r\n/g, '\n');
-                let sMes = (safeToRestore[i].mes || "").trim().replace(/\r\n/g, '\n');
-
-                if (cMes !== sMes || cUser !== sUser) {
+                if (!isNodeMatch(coreChat[i], safeToRestore[i])) {
                     divergeIdx = i;
                     break;
                 }
@@ -844,9 +1141,10 @@ function renderTree() {
                         let cleanLost = cloneChat(lostFuture);
 
                         let alreadyExists = false;
-                        for (let entry of existing) {
-                            if (isPathDuplicate(entry, cleanLost)) {
+                        for (let k = 0; k < existing.length; k++) {
+                            if (isPathDuplicate(existing[k], cleanLost)) {
                                 alreadyExists = true;
+                                existing[k] = cleanLost; // Запоминаем самую свежую версию
                                 break;
                             }
                         }

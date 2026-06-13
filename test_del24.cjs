@@ -1,0 +1,1 @@
+console.log("If ST emits CHAT_CHANGED when a message is deleted, syncShadow updates shadowChat immediately. Then MESSAGE_DELETED fires, but shadowChat is already truncated, so deleteBranchTarget is never called!");

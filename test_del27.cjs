@@ -1,0 +1,1 @@
+console.log("If ST natively deletes message B, it disappears from coreChat. It was never in branch_futures. So it's completely gone from ST and from branch_futures. Why does it reappear in the Tree?");
