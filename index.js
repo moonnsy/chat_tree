@@ -1,10 +1,33 @@
-import { getContext } from '../../../extensions.js';
-import { eventSource, event_types, reloadCurrentChat, chat as coreChat, saveChatConditional } from '../../../../script.js';
+import { getContext, extension_settings } from '../../../extensions.js';
+import { eventSource, event_types, reloadCurrentChat, chat as coreChat, saveChatConditional, saveSettingsDebounced } from '../../../../script.js';
 
 let shadowChat = [];
+let shadowChatKey = null; // ПАТЧ: какому чату принадлежит shadowChat
 let activeSwipes = {};
 let isBusy = false;
 let syncTimer = null;
+
+// ПАТЧ: Настройки расширения
+const CT_MODULE = 'chat_tree';
+function ctSettings() {
+    if (!extension_settings[CT_MODULE]) extension_settings[CT_MODULE] = {};
+    if (extension_settings[CT_MODULE].showChatTagButtons === undefined) {
+        extension_settings[CT_MODULE].showChatTagButtons = true;
+    }
+    return extension_settings[CT_MODULE];
+}
+
+// ПАТЧ: Идентификатор текущего чата (чтобы не сравнивать shadowChat из другого чата)
+function getChatKey() {
+    try {
+        const ctx = getContext();
+        let id = typeof ctx.getCurrentChatId === 'function' ? ctx.getCurrentChatId() : null;
+        let owner = ctx.groupId !== undefined && ctx.groupId !== null ? ctx.groupId : ctx.characterId;
+        return `${owner === undefined || owner === null ? '' : owner}|${id === undefined || id === null ? '' : id}`;
+    } catch (e) {
+        return null;
+    }
+}
 
 // ПАТЧ: Синхронизация текста и свайпов (глобально)
 function syncMesAndSwipesGlobal(chatArray) {
@@ -162,13 +185,29 @@ function getNodeHash(stack) {
     return "tag_" + h.toString(36);
 }
 
+// ПАТЧ: "Мягкий" хэш узла - без номеров свайпов.
+// Номера свайпов перенумеровываются при слиянии веток (unifyMessages), из-за чего
+// строгий хэш менялся и тег считался "осиротевшим". Мягкий хэш это переживает
+// и позволяет перепривязать тег к новому строгому хэшу.
+function getNodeLooseHash(stack) {
+    if (!stack || stack.length === 0) return "";
+    let identifiers = stack.map(m => `${String(m.msg.is_user)}_${m.msg.send_date || ''}`);
+    let last = stack[stack.length - 1];
+    let lastText = (last.msg.swipes && last.msg.swipes.length > last.swipeId) ? last.msg.swipes[last.swipeId] : last.msg.mes;
+    identifiers.push((lastText || "").trim().replace(/\r\n/g, '\n').slice(0, 300));
+    let s = identifiers.join('||');
+    let h = 0, l = s.length, i = 0;
+    if (l > 0) while (i < l) h = (h << 5) - h + s.charCodeAt(i++) | 0;
+    return "lt_" + h.toString(36);
+}
+
 function buildRestoreArray(stack) {
     if (!stack) return [];
     return stack.map(item => cloneMessageWithSwipe(item.msg, item.swipeId));
 }
 
 // ПАТЧ: Универсальная модалка для тегов и интеграция в чат
-function openGlobalTagModal(nodeHash, nodeText, onSaveCallback, onDeleteCallback) {
+function openGlobalTagModal(nodeHash, nodeText, onSaveCallback, onDeleteCallback, looseHash) {
     if (!$('#ct-global-tag-modal-overlay').length) {
         $('body').append(`
         <div id="ct-global-tag-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:100001; align-items:center; justify-content:center; background:rgba(0,0,0,0.5);">
@@ -231,7 +270,9 @@ function openGlobalTagModal(nodeHash, nodeText, onSaveCallback, onDeleteCallback
         coreChat[0].chat_tree_tags[nodeHash] = {
             color: $('#ct-global-tag-modal').data('selected-color'),
             desc: $('#ct-global-tag-desc').val(),
-            nodeText: nodeText
+            nodeText: nodeText,
+            // ПАТЧ: мягкий хэш нужен, чтобы тег можно было найти после перенумерации свайпов
+            looseHash: looseHash || (tagData && tagData.looseHash) || undefined
         };
         if (typeof saveChatConditional === 'function') await saveChatConditional();
         $('#ct-global-tag-modal-overlay').hide();
@@ -251,17 +292,22 @@ function openGlobalTagModal(nodeHash, nodeText, onSaveCallback, onDeleteCallback
     });
 }
 
-function getHashForCoreChatIndex(index) {
+function getHashesForCoreChatIndex(index) {
     if (!coreChat || index < 0 || index >= coreChat.length) return null;
     let stack = [];
     for(let i = 0; i <= index; i++) {
         if (!coreChat[i]) continue;
         stack.push({ msg: coreChat[i], swipeId: coreChat[i].swipe_id || 0 });
     }
-    return getNodeHash(stack);
+    return { hash: getNodeHash(stack), looseHash: getNodeLooseHash(stack) };
 }
 
 function updateChatUI() {
+    // ПАТЧ: Переключатель отображения кнопок тегов в чате
+    if (!ctSettings().showChatTagButtons) {
+        $('#chat .ct-inline-tag-btn').remove();
+        return;
+    }
     if (!coreChat || coreChat.length === 0) return;
     $('#chat .mes').each(function() {
         let mesId = $(this).attr('mesid');
@@ -269,9 +315,11 @@ function updateChatUI() {
         let index = parseInt(mesId);
         if (isNaN(index) || index < 0 || index >= coreChat.length) return;
         
-        let hash = getHashForCoreChatIndex(index);
-        if (!hash) return;
-        
+        let hashes = getHashesForCoreChatIndex(index);
+        if (!hashes || !hashes.hash) return;
+        let hash = hashes.hash;
+        let looseHash = hashes.looseHash;
+
         let tagData = null;
         if (coreChat[0].chat_tree_tags && coreChat[0].chat_tree_tags[hash]) {
             tagData = coreChat[0].chat_tree_tags[hash];
@@ -291,7 +339,7 @@ function updateChatUI() {
         $existingBtn.off('click').on('click', function(e) {
             e.stopPropagation();
             let msgText = coreChat[index].swipes ? coreChat[index].swipes[coreChat[index].swipe_id || 0] : coreChat[index].mes;
-            openGlobalTagModal(hash, msgText, null, null);
+            openGlobalTagModal(hash, msgText, null, null, looseHash);
         });
         
         if (tagData) {
@@ -369,6 +417,17 @@ function removeSwipeFromMessage(msg, swipeId) {
 async function deleteBranchTarget(toRestore, targetSwipeId = null) {
     if (!toRestore || toRestore.length === 0) return;
 
+    // ПАТЧ: Пока идёт удаление, перестройка чата не должна восприниматься как новое удаление
+    let wasBusy = isBusy;
+    isBusy = true;
+    try {
+        await deleteBranchTargetInner(toRestore, targetSwipeId);
+    } finally {
+        isBusy = wasBusy;
+    }
+}
+
+async function deleteBranchTargetInner(toRestore, targetSwipeId = null) {
     let divergeIdx = -1;
     for (let i = 0; i < Math.min(coreChat.length, toRestore.length); i++) {
         if (!isNodeMatch(coreChat[i], toRestore[i])) {
@@ -423,6 +482,15 @@ async function deleteBranchTarget(toRestore, targetSwipeId = null) {
     }
     collect(coreChat);
 
+    // ПАТЧ: Тег удаляемого узла стираем ровно один раз (раньше это висело внутри цикла по startIdx
+    // и каждый раз считало один и тот же хэш, срабатывая даже когда ничего не удалялось)
+    if (coreChat[0] && coreChat[0].chat_tree_tags) {
+        let nodeHash = getNodeHash(toRestore.map(m => ({ msg: m, swipeId: m.swipe_id || 0 })));
+        if (coreChat[0].chat_tree_tags[nodeHash]) {
+            delete coreChat[0].chat_tree_tags[nodeHash];
+        }
+    }
+
     // Проходим по всем сообщениям и вычищаем из их веток удаляемый хвост
     allMsgs.forEach(ancestor => {
         if (!ancestor || !ancestor.branch_futures) return;
@@ -431,15 +499,6 @@ async function deleteBranchTarget(toRestore, targetSwipeId = null) {
         for (let startIdx = 0; startIdx < toRestore.length; startIdx++) {
             let pathTail = toRestore.slice(startIdx);
             if (pathTail.length === 0) continue;
-
-            // ПАТЧ: Также удаляем тег этого узла, если он есть
-            if (coreChat[0].chat_tree_tags) {
-                let stack = toRestore.slice(0, startIdx + pathTail.length);
-                let nodeHash = getNodeHash(stack.map(m => ({ msg: m, swipeId: m.swipe_id || 0 })));
-                if (coreChat[0].chat_tree_tags[nodeHash]) {
-                    delete coreChat[0].chat_tree_tags[nodeHash];
-                }
-            }
 
             for (let swipeKey in ancestor.branch_futures) {
                 let futures = ancestor.branch_futures[swipeKey];
@@ -507,10 +566,16 @@ async function deleteBranchTarget(toRestore, targetSwipeId = null) {
 
 function syncShadow() {
     if (!coreChat) return;
-    
+
+    let chatKey = getChatKey();
+    // ПАТЧ: shadowChat можно сравнивать с coreChat только внутри одного и того же чата
+    let sameChat = (shadowChatKey !== null && shadowChatKey === chatKey);
+
     // ПАТЧ: Проверка на удаление перед обновлением shadowChat.
     // Если длина уменьшилась, значит хвост был удален.
-    if (shadowChat && shadowChat.length > coreChat.length) {
+    // ВАЖНО: не срабатывает при isBusy (прыжок по дереву / уже идущее удаление) и при смене чата -
+    // раньше прыжок "вверх" делал чат короче, это принималось за удаление и стирало тег/ветку.
+    if (!isBusy && sameChat && shadowChat && shadowChat.length > coreChat.length) {
         let pathToDelete = shadowChat.slice(0, coreChat.length + 1);
         deleteBranchTarget(pathToDelete).catch(e => console.error("chat-tree: Error in auto-delete", e));
     }
@@ -518,6 +583,7 @@ function syncShadow() {
     syncMesAndSwipesGlobal(coreChat);
 
     shadowChat = cloneChat(coreChat);
+    shadowChatKey = chatKey;
     activeSwipes = {};
     coreChat.forEach((m, i) => {
         activeSwipes[i] = m.swipe_id || 0;
@@ -658,6 +724,7 @@ function buildHtmlTree(node) {
 
         window.ctNodeMap[n.id] = n.chatToRestoreStack;
         window.ctNodeTextMap[n.id] = n.text;
+        window.ctNodeLooseMap[n.id] = n.looseHash;
         
         // ПАТЧ: Отрисовка тегов (полная подсветка)
         let tagData = null;
@@ -879,6 +946,7 @@ function parseArray(msgArray, reconstructStack, activePathAccumulator, virtualFu
         let sNode = {
             id: 'node_' + Math.random().toString(36).substr(2, 9),
             nodeHash: getNodeHash(targetChatToRestoreStack),
+            looseHash: getNodeLooseHash(targetChatToRestoreStack),
             msgData: msg,
             swipeId: s,
             text: swipes[s],
@@ -904,7 +972,8 @@ window.renderGlobalTags = function() {
     
     for (let hash in tags) {
         let tag = tags[hash];
-        
+        if (!tag || tag._orphan) continue; // ПАТЧ: скрытые (потерявшие узел) теги не показываем
+
         let $item = $(`
             <div class="ct-global-tag" data-hash="${hash}" style="display:flex; flex-direction:column; align-items: flex-end; cursor:pointer; transition:0.2s;">
                 <div style="width:20px; height:20px; border-radius:50%; background:${escapeHtml(tag.color)}; flex-shrink:0; border: 2px solid rgba(255,255,255,0.2);"></div>
@@ -939,30 +1008,66 @@ window.renderGlobalTags = function() {
     }
 };
 
+// ПАТЧ: Теги больше НЕ удаляются при рендере.
+// Раньше любой тег, чей строгий хэш не нашёлся в дереве, стирался навсегда - а хэш меняется
+// при перенумерации свайпов после слияния веток. Теперь тег сначала пытаются перепривязать
+// по мягкому хэшу, а если узел действительно не найден - он просто помечается скрытым
+// (_orphan) и восстановится сам, когда узел снова появится.
 function scrubOrphanedTags(roots) {
     if (!coreChat || coreChat.length === 0 || !coreChat[0].chat_tree_tags) return;
-    
+
     let validHashes = new Set();
+    let looseToHash = {};
+    let hashToLoose = {};
     function collect(nodes) {
         nodes.forEach(n => {
             validHashes.add(n.nodeHash);
+            if (n.looseHash) {
+                if (looseToHash[n.looseHash] === undefined) looseToHash[n.looseHash] = n.nodeHash;
+                if (hashToLoose[n.nodeHash] === undefined) hashToLoose[n.nodeHash] = n.looseHash;
+            }
             if (n.children) collect(n.children);
         });
     }
     collect(roots);
-    
+
     let tags = coreChat[0].chat_tree_tags;
-    let deletedCount = 0;
-    for (let hash in tags) {
-        if (!validHashes.has(hash)) {
+    let changed = false;
+    let remapped = 0, orphaned = 0;
+
+    for (let hash of Object.keys(tags)) {
+        let tag = tags[hash];
+        if (!tag) continue;
+
+        if (validHashes.has(hash)) {
+            if (tag._orphan) { delete tag._orphan; changed = true; }
+            // Дописываем мягкий хэш старым тегам, чтобы они пережили будущую перенумерацию свайпов
+            if (!tag.looseHash && hashToLoose[hash]) { tag.looseHash = hashToLoose[hash]; changed = true; }
+            continue;
+        }
+
+        // Пытаемся найти тот же узел с новым номером свайпа
+        let newHash = tag.looseHash ? looseToHash[tag.looseHash] : undefined;
+        if (newHash && newHash !== hash && !tags[newHash]) {
+            delete tag._orphan;
+            tags[newHash] = tag;
             delete tags[hash];
-            deletedCount++;
+            remapped++;
+            changed = true;
+            continue;
+        }
+
+        if (!tag._orphan) {
+            tag._orphan = true;
+            orphaned++;
+            changed = true;
         }
     }
-    if (deletedCount > 0) {
-        console.log(`chat-tree: Scrubbed ${deletedCount} orphaned tags.`);
-        if (typeof saveChatConditional === 'function') saveChatConditional();
+
+    if (remapped > 0 || orphaned > 0) {
+        console.log(`chat-tree: tags remapped=${remapped}, hidden as orphaned=${orphaned}`);
     }
+    if (changed && typeof saveChatConditional === 'function') saveChatConditional();
 }
 
 function renderTree() {
@@ -972,6 +1077,7 @@ function renderTree() {
 
     window.ctNodeMap = {};
     window.ctNodeTextMap = {};
+    window.ctNodeLooseMap = {};
 
     try {
         let roots = parseArray(coreChat, [], true);
@@ -997,6 +1103,7 @@ function renderTree() {
 
         const id = $(this).data('id');
         const nodeHash = $(this).data('hash');
+        const nodeLooseHash = window.ctNodeLooseMap ? window.ctNodeLooseMap[id] : undefined;
         const toRestoreStack = window.ctNodeMap[id];
         const nodeText = window.ctNodeTextMap[id] || "(пустое сообщение)";
         if (!toRestoreStack) return;
@@ -1035,7 +1142,8 @@ function renderTree() {
                     let isNodeActive = $nodeParent.hasClass('active-node');
                     $nodeDiv.css('border', isNodeActive ? '3px solid #8db7d5' : '2px solid rgba(255,255,255,0.2)');
                     $nodeDiv.css('box-shadow', isNodeActive ? '0 0 15px #8db7d5' : ($nodeParent.children('ul').length > 0 ? '0 0 10px #00aaff' : 'none'));
-                }
+                },
+                nodeLooseHash
             );
         });
 
@@ -1234,6 +1342,13 @@ function showTreeModal() {
                         <circle cx="12" cy="12" r="3"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path>
                     </svg>
                 </button>
+                <!-- ПАТЧ: Переключатель кнопок тегов в чате -->
+                <button id="ct-toggle-tags-btn" class="ct-btn" title="Кнопки тегов в чате">
+                    <span style="position:relative; width:20px; height:20px; display:flex; align-items:center; justify-content:center;">
+                        <span class="ct-tag-toggle-dot" style="width:14px; height:14px; border-radius:50%; border:2px solid #8db7d5; background:#8db7d5; box-sizing:border-box; transition:0.2s;"></span>
+                        <span class="ct-tag-toggle-slash" style="display:none; position:absolute; left:-1px; top:9px; width:22px; height:2px; background:#CD5C5C; transform:rotate(-45deg); border-radius:2px;"></span>
+                    </span>
+                </button>
                 <button id="ct-close-btn" class="ct-btn ct-btn-close" title="Закрыть дерево (Esc)">&times;</button>
                 
                 <!-- ПАТЧ: Глобальный список тегов -->
@@ -1259,6 +1374,31 @@ function showTreeModal() {
             </div>
         </div>
     </div>`);
+
+    // ПАТЧ: Переключатель отображения кнопок тегов в чате
+    function ctRefreshTagToggleBtn() {
+        let on = ctSettings().showChatTagButtons;
+        let $b = $('#ct-toggle-tags-btn');
+        if (!$b.length) return;
+        $b.attr('title', on ? 'Кнопки тегов в чате: ВКЛ (нажмите, чтобы скрыть)' : 'Кнопки тегов в чате: ВЫКЛ (нажмите, чтобы показать)');
+        $b.css('border-color', on ? 'rgba(141,183,213,0.6)' : 'rgba(255,255,255,0.15)');
+        $b.find('.ct-tag-toggle-dot').css({
+            'background': on ? '#8db7d5' : 'transparent',
+            'border-color': on ? '#8db7d5' : '#777',
+            'opacity': on ? '1' : '0.6'
+        });
+        $b.find('.ct-tag-toggle-slash').css('display', on ? 'none' : 'block');
+    }
+    ctRefreshTagToggleBtn();
+
+    $('#ct-toggle-tags-btn').on('click', function (e) {
+        e.stopPropagation();
+        let s = ctSettings();
+        s.showChatTagButtons = !s.showChatTagButtons;
+        if (typeof saveSettingsDebounced === 'function') saveSettingsDebounced();
+        ctRefreshTagToggleBtn();
+        updateChatUI();
+    });
 
     $('#ct-close-btn').on('click', () => $('#chat-tree-modal').remove());
     $('#ct-preview-close').on('click', function () {
